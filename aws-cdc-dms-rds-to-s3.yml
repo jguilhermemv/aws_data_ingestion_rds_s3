@@ -1,0 +1,167 @@
+Resources:
+  MySecret:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: app_data_lake
+      Description: Credentials for the RDS database
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "app_data_lake"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\\'
+
+  MyVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: aws-vpc-cdc-cloud-formation-dms-rds-s3
+
+  MyInternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+
+  MySubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+
+  MySubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: us-east-1b
+
+  MyDBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS DB instance
+      SubnetIds:
+        - !Ref MySubnet1
+        - !Ref MySubnet2
+
+  MySecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Security Group for RDS DB Instance
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+
+  MyRDSDatabase:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      AllocatedStorage: '20'
+      DBInstanceClass: 'db.t3.micro'
+      Engine: postgres
+      EngineVersion: '14'
+      MasterUsername: '{{resolve:secretsmanager:app_data_lake:SecretString:username}}'
+      MasterUserPassword: '{{resolve:secretsmanager:app_data_lake:SecretString:password}}'
+      VPCSecurityGroups:
+        - !Ref MySecurityGroup
+      DBSubnetGroupName: !Ref MyDBSubnetGroup
+      MultiAZ: false
+
+  MyDMSServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'dms.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: DMSAccessForS3Endpoint
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 's3:*'
+                Resource: '*'
+
+  MyReplicationSubnetGroup:
+    Type: 'AWS::DMS::ReplicationSubnetGroup'
+    Properties:
+      ReplicationSubnetGroupIdentifier: rds-pgsql-to-s3-replication-subnet-group
+      ReplicationSubnetGroupDescription: Subnet group for DMS replication instance
+      SubnetIds:
+        - !Ref MySubnet1
+        - !Ref MySubnet2
+
+  MyReplicationInstance:
+    Type: 'AWS::DMS::ReplicationInstance'
+    Properties:
+      ReplicationInstanceIdentifier: 'encontro-7-ingestao-de-dados-dms'
+      ReplicationInstanceClass: dms.t2.micro
+      PubliclyAccessible: False
+      AllocatedStorage: 20
+      VpcSecurityGroupIds:
+        - !Ref MySecurityGroup
+      ReplicationSubnetGroupIdentifier: !Ref MyReplicationSubnetGroup
+
+  MySourceEndpoint:
+    Type: 'AWS::DMS::Endpoint'
+    Properties:
+      EndpointIdentifier: rds-postgresql14-source-endpoint
+      EndpointType: source
+      EngineName: postgres
+      Username: '{{resolve:secretsmanager:app_data_lake:SecretString:username}}'
+      Password: '{{resolve:secretsmanager:app_data_lake:SecretString:password}}'
+      ServerName: !GetAtt MyRDSDatabase.Endpoint.Address
+      Port: 5432
+      DatabaseName: postgres
+      ExtraConnectionAttributes: 'plugin_name=pg_logical'
+
+  MyTargetEndpoint:
+    Type: 'AWS::DMS::Endpoint'
+    Properties:
+      EndpointIdentifier: s3-target-endpoint
+      EndpointType: target
+      EngineName: s3
+      S3Settings: 
+        BucketName: !Sub '${AWS::AccountId}_encontro_7_how_bootcamp'
+        ServiceAccessRoleArn: !GetAtt MyDMSServiceRole.Arn
+        DataFormat: 'csv'
+
+  MyReplicationTask:
+    Type: 'AWS::DMS::ReplicationTask'
+    Properties:
+      MigrationType: full-load-and-cdc
+      TableMappings: 
+        Fn::Sub: |
+          {
+            "rules": [
+              {
+                "rule-type": "selection",
+                "rule-id": "1",
+                "rule-name": "1",
+                "object-locator": {
+                  "schema-name": "%",
+                  "table-name": "%"
+                },
+                "rule-action": "include"
+              }
+            ]
+          }
+      ReplicationTaskIdentifier: rds-pgsql-to-s3-replication-task
+      SourceEndpointArn: !Ref MySourceEndpoint
+      TargetEndpointArn: !Ref MyTargetEndpoint
+      ReplicationInstanceArn: !Ref MyReplicationInstance
+
+  
+
+  
