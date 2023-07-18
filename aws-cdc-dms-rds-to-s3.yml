@@ -8,7 +8,7 @@ Resources:
         SecretStringTemplate: '{"username": "app_data_lake"}'
         GenerateStringKey: 'password'
         PasswordLength: 30
-        ExcludeCharacters: '"@/\\'
+        ExcludeCharacters: '";+%@/\\'
 
   MyVPC:
     Type: 'AWS::EC2::VPC'
